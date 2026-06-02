@@ -134,6 +134,9 @@ function GroupPage() {
   const [amount, setAmount] = useState('')
   const [category, setCategory] = useState('other')
   const [adding, setAdding] = useState(false)
+  const [splitMode, setSplitMode] = useState<'equal' | 'exact' | 'percentage' | 'shares'>('equal')
+  const [paidBy, setPaidBy] = useState<string>('')
+  const [memberInputs, setMemberInputs] = useState<Record<string, string>>({})
 
   // Edit / delete expense
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null)
@@ -174,6 +177,14 @@ function GroupPage() {
   useEffect(() => {
     loadAll()
   }, [groupId])
+
+  useEffect(() => {
+    if (showModal) {
+      setSplitMode('equal')
+      setPaidBy(currentUserId ?? '')
+      setMemberInputs({})
+    }
+  }, [showModal])
 
   async function loadAll() {
     setLoading(true)
@@ -246,25 +257,44 @@ function GroupPage() {
 
     const { data: expense, error: expErr } = await supabase
       .from('expenses')
-      .insert({ group_id: groupId, paid_by: currentUserId, amount: parsed, description: desc.trim(), category })
+      .insert({ group_id: groupId, paid_by: paidBy || currentUserId, amount: parsed, description: desc.trim(), category, split_mode: splitMode })
       .select()
       .single()
 
     if (expErr) { setError(expErr.message); setAdding(false); return }
 
-    const share = Math.round((parsed / members.length) * 100) / 100
-    const splitRows = members.map((m) => ({
-      expense_id: expense.id,
-      user_id: m.user_id,
-      amount: share,
-      settled: false,
-    }))
+    let splitRows: { expense_id: string; user_id: string; amount: number; settled: boolean }[] = []
+
+    if (splitMode === 'equal') {
+      const share = Math.round((parsed / members.length) * 100) / 100
+      splitRows = members.map((m) => ({ expense_id: expense.id, user_id: m.user_id, amount: share, settled: false }))
+    } else if (splitMode === 'exact') {
+      splitRows = members.map((m) => ({
+        expense_id: expense.id, user_id: m.user_id,
+        amount: Math.round(parseFloat(memberInputs[m.user_id] || '0') * 100) / 100, settled: false,
+      }))
+    } else if (splitMode === 'percentage') {
+      splitRows = members.map((m) => ({
+        expense_id: expense.id, user_id: m.user_id,
+        amount: Math.round((parsed * parseFloat(memberInputs[m.user_id] || '0') / 100) * 100) / 100, settled: false,
+      }))
+    } else if (splitMode === 'shares') {
+      const totalShares = members.reduce((s, m) => s + parseFloat(memberInputs[m.user_id] || '1'), 0)
+      splitRows = members.map((m) => ({
+        expense_id: expense.id, user_id: m.user_id,
+        amount: Math.round((parsed * parseFloat(memberInputs[m.user_id] || '1') / totalShares) * 100) / 100, settled: false,
+      }))
+    }
+
     const { error: splitErr } = await supabase.from('expense_splits').insert(splitRows)
     if (splitErr) setError(splitErr.message)
 
     setDesc('')
     setAmount('')
     setCategory('other')
+    setSplitMode('equal')
+    setPaidBy(currentUserId ?? '')
+    setMemberInputs({})
     setAdding(false)
     setShowModal(false)
     loadAll()
@@ -1056,12 +1086,85 @@ function GroupPage() {
                   className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
                 />
               </div>
-              <p className="text-xs text-gray-400">
-                Split equally among {members.length} {members.length === 1 ? 'member' : 'members'}
-                {members.length > 0 && amount && !isNaN(parseFloat(amount)) && parseFloat(amount) > 0 && (
-                  <> · ₹{(parseFloat(amount) / members.length).toFixed(2)} each</>
-                )}
-              </p>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Paid by</label>
+                <select
+                  value={paidBy}
+                  onChange={(e) => setPaidBy(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                >
+                  {members.map((m) => (
+                    <option key={m.user_id} value={m.user_id}>
+                      {profiles[m.user_id]?.display_name ?? m.user_id} {m.user_id === currentUserId ? '(you)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Split</label>
+                <div className="flex gap-2 flex-wrap">
+                  {(['equal', 'exact', 'percentage', 'shares'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => { setSplitMode(mode); setMemberInputs({}) }}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+                        splitMode === mode
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      }`}
+                    >
+                      {mode === 'equal' ? 'Equal' : mode === 'exact' ? 'Exact' : mode === 'percentage' ? '%' : 'Shares'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {splitMode !== 'equal' && (
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700">
+                    {splitMode === 'exact' ? 'Amount per person (₹)' : splitMode === 'percentage' ? 'Percentage per person' : 'Shares per person'}
+                  </label>
+                  {members.map((m) => (
+                    <div key={m.user_id} className="flex items-center gap-2">
+                      <span className="text-sm text-gray-600 w-24 truncate">
+                        {profiles[m.user_id]?.display_name ?? 'Unknown'}{m.user_id === currentUserId ? ' (you)' : ''}
+                      </span>
+                      <input
+                        type="number"
+                        min="0"
+                        step={splitMode === 'shares' ? '1' : '0.01'}
+                        placeholder={
+                          splitMode === 'exact'
+                            ? (parseFloat(amount) / members.length || 0).toFixed(2)
+                            : splitMode === 'percentage'
+                            ? (100 / members.length).toFixed(1)
+                            : '1'
+                        }
+                        value={memberInputs[m.user_id] ?? ''}
+                        onChange={(e) => setMemberInputs((prev) => ({ ...prev, [m.user_id]: e.target.value }))}
+                        className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+                      />
+                    </div>
+                  ))}
+                  {splitMode === 'percentage' && (() => {
+                    const total = members.reduce((s, m) => s + parseFloat(memberInputs[m.user_id] || '0'), 0)
+                    return <p className={`text-xs ${Math.abs(total - 100) < 0.01 ? 'text-green-600' : 'text-amber-600'}`}>Total: {total.toFixed(1)}% / 100%</p>
+                  })()}
+                  {splitMode === 'exact' && (() => {
+                    const total = members.reduce((s, m) => s + parseFloat(memberInputs[m.user_id] || '0'), 0)
+                    const target = parseFloat(amount) || 0
+                    return <p className={`text-xs ${Math.abs(total - target) < 0.01 ? 'text-green-600' : 'text-amber-600'}`}>Total: ₹{total.toFixed(2)} / ₹{target.toFixed(2)}</p>
+                  })()}
+                </div>
+              )}
+              {splitMode === 'equal' && (
+                <p className="text-xs text-gray-400">
+                  Split equally among {members.length} {members.length === 1 ? 'member' : 'members'}
+                  {members.length > 0 && amount && !isNaN(parseFloat(amount)) && parseFloat(amount) > 0 && (
+                    <> · ₹{(parseFloat(amount) / members.length).toFixed(2)} each</>
+                  )}
+                </p>
+              )}
               <button
                 type="submit"
                 disabled={adding}

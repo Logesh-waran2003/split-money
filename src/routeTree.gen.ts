@@ -14,6 +14,7 @@ import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as InviteTokenRouteImport } from './routes/invite/$token'
 import { Route as GroupsGroupIdRouteImport } from './routes/groups/$groupId'
 
 const SignupRoute = SignupRouteImport.update({
@@ -41,6 +42,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const InviteTokenRoute = InviteTokenRouteImport.update({
+  id: '/invite/$token',
+  path: '/invite/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const GroupsGroupIdRoute = GroupsGroupIdRouteImport.update({
   id: '/groups/$groupId',
   path: '/groups/$groupId',
@@ -54,6 +60,7 @@ export interface FileRoutesByFullPath {
   '/profile': typeof ProfileRoute
   '/signup': typeof SignupRoute
   '/groups/$groupId': typeof GroupsGroupIdRoute
+  '/invite/$token': typeof InviteTokenRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -62,6 +69,7 @@ export interface FileRoutesByTo {
   '/profile': typeof ProfileRoute
   '/signup': typeof SignupRoute
   '/groups/$groupId': typeof GroupsGroupIdRoute
+  '/invite/$token': typeof InviteTokenRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -71,6 +79,7 @@ export interface FileRoutesById {
   '/profile': typeof ProfileRoute
   '/signup': typeof SignupRoute
   '/groups/$groupId': typeof GroupsGroupIdRoute
+  '/invite/$token': typeof InviteTokenRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -81,6 +90,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/signup'
     | '/groups/$groupId'
+    | '/invite/$token'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -89,6 +99,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/signup'
     | '/groups/$groupId'
+    | '/invite/$token'
   id:
     | '__root__'
     | '/'
@@ -97,6 +108,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/signup'
     | '/groups/$groupId'
+    | '/invite/$token'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -106,6 +118,7 @@ export interface RootRouteChildren {
   ProfileRoute: typeof ProfileRoute
   SignupRoute: typeof SignupRoute
   GroupsGroupIdRoute: typeof GroupsGroupIdRoute
+  InviteTokenRoute: typeof InviteTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -145,6 +158,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/invite/$token': {
+      id: '/invite/$token'
+      path: '/invite/$token'
+      fullPath: '/invite/$token'
+      preLoaderRoute: typeof InviteTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/groups/$groupId': {
       id: '/groups/$groupId'
       path: '/groups/$groupId'
@@ -162,6 +182,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProfileRoute: ProfileRoute,
   SignupRoute: SignupRoute,
   GroupsGroupIdRoute: GroupsGroupIdRoute,
+  InviteTokenRoute: InviteTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
