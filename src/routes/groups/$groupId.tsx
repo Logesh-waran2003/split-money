@@ -84,6 +84,7 @@ function GroupPage() {
   const navigate = useNavigate()
 
   const [groupName, setGroupName] = useState('')
+  const [groupCreatedBy, setGroupCreatedBy] = useState<string | null>(null)
   const [members, setMembers] = useState<Member[]>([])
   const [profiles, setProfiles] = useState<Record<string, Profile>>({})
   const [expenses, setExpenses] = useState<ExpenseRow[]>([])
@@ -97,6 +98,20 @@ function GroupPage() {
   const [desc, setDesc] = useState('')
   const [amount, setAmount] = useState('')
   const [adding, setAdding] = useState(false)
+
+  // Group actions menu
+  const [showMenu, setShowMenu] = useState(false)
+
+  // Rename
+  const [editingName, setEditingName] = useState(false)
+  const [nameInput, setNameInput] = useState('')
+
+  // Leave group
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false)
+
+  // Delete group
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   // Invite by email
   const [inviteEmail, setInviteEmail] = useState('')
@@ -123,13 +138,14 @@ function GroupPage() {
     setCurrentUserId(user?.id ?? null)
 
     const [groupRes, membersRes, expensesRes] = await Promise.all([
-      supabase.from('groups').select('name').eq('id', groupId).single(),
+      supabase.from('groups').select('name, created_by').eq('id', groupId).single(),
       supabase.from('group_members').select('user_id').eq('group_id', groupId),
       supabase.from('expenses').select('*').eq('group_id', groupId).order('created_at', { ascending: false }),
     ])
 
     if (groupRes.error) { setError(groupRes.error.message); setLoading(false); return }
     setGroupName(groupRes.data.name)
+    setGroupCreatedBy(groupRes.data.created_by)
 
     const memberList: Member[] = membersRes.data ?? []
     setMembers(memberList)
@@ -325,6 +341,26 @@ function GroupPage() {
     loadAll()
   }
 
+  async function handleRenameGroup() {
+    const trimmed = nameInput.trim()
+    if (!trimmed || trimmed === groupName) { setEditingName(false); return }
+    await supabase.from('groups').update({ name: trimmed }).eq('id', groupId)
+    setGroupName(trimmed)
+    setEditingName(false)
+  }
+
+  async function handleLeave() {
+    if (!currentUserId) return
+    await supabase.from('group_members').delete().eq('group_id', groupId).eq('user_id', currentUserId)
+    navigate({ to: '/dashboard' })
+  }
+
+  async function handleDeleteGroup() {
+    setDeleting(true)
+    await supabase.from('groups').delete().eq('id', groupId)
+    navigate({ to: '/dashboard' })
+  }
+
   const balances = computeBalances(
     expenses.map((e): Expense => ({ id: e.id, paid_by: e.paid_by, amount: e.amount })),
     splits.map((s): Split => ({ expense_id: s.expense_id, user_id: s.user_id, amount: s.amount, settled: s.settled })),
@@ -356,7 +392,24 @@ function GroupPage() {
           </svg>
           Back
         </button>
-        <h1 className="font-bold text-gray-900 text-lg flex-1 truncate">{groupName || '…'}</h1>
+
+        {/* Group name / inline rename */}
+        {editingName ? (
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <input
+              autoFocus
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleRenameGroup(); if (e.key === 'Escape') setEditingName(false) }}
+              className="flex-1 border border-indigo-300 rounded-xl px-3 py-1.5 text-sm font-semibold text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 min-w-0"
+            />
+            <button onClick={handleRenameGroup} className="text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg px-3 py-1.5 transition shrink-0">Save</button>
+            <button onClick={() => setEditingName(false)} className="text-xs font-medium text-gray-500 hover:text-gray-700 transition shrink-0">Cancel</button>
+          </div>
+        ) : (
+          <h1 className="font-bold text-gray-900 text-lg flex-1 truncate">{groupName || '…'}</h1>
+        )}
+
         {/* Stacked member avatars */}
         <div className="flex items-center">
           <div className="flex -space-x-2">
@@ -377,6 +430,47 @@ function GroupPage() {
             )}
           </div>
         </div>
+
+        {/* ⋯ actions menu */}
+        <div className="relative">
+          <button
+            onClick={() => setShowMenu((v) => !v)}
+            className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition"
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/>
+            </svg>
+          </button>
+          {showMenu && (
+            <div className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl shadow-lg border border-gray-100 py-1 z-20">
+              {currentUserId === groupCreatedBy && (
+                <button
+                  onClick={() => { setNameInput(groupName); setEditingName(true); setShowMenu(false) }}
+                  className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  Rename group
+                </button>
+              )}
+              {currentUserId !== groupCreatedBy && (
+                <button
+                  onClick={() => { setShowLeaveConfirm(true); setShowMenu(false) }}
+                  className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  Leave group
+                </button>
+              )}
+              {currentUserId === groupCreatedBy && (
+                <button
+                  onClick={() => { setShowDeleteConfirm(true); setShowMenu(false) }}
+                  className="w-full text-left px-4 py-2.5 text-sm text-red-600 hover:bg-red-50"
+                >
+                  Delete group
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
         <button
           onClick={() => setShowModal(true)}
           className="ml-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-xl px-4 py-2 transition shrink-0"
@@ -658,6 +752,49 @@ function GroupPage() {
             </div>
           )}
         </section>
+
+        {/* Leave confirm */}
+        {showLeaveConfirm && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4">
+            <p className="text-sm font-medium text-amber-800 mb-3">Leave this group?</p>
+            <p className="text-xs text-amber-600 mb-4">You'll lose access to all expenses and balances in this group.</p>
+            <div className="flex gap-2">
+              <button
+                onClick={handleLeave}
+                className="flex-1 bg-amber-600 hover:bg-amber-700 text-white rounded-xl py-2 text-sm font-semibold transition"
+              >
+                Leave group
+              </button>
+              <button
+                onClick={() => setShowLeaveConfirm(false)}
+                className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2 text-sm font-medium hover:bg-gray-50 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Danger zone — creator only */}
+        {currentUserId === groupCreatedBy && (
+          <section>
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Danger zone</h2>
+            <div className="bg-white rounded-2xl border border-red-100 px-5 py-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Delete group</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Permanently removes all expenses, balances, and history</p>
+                </div>
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="text-sm text-red-600 border border-red-200 bg-red-50 hover:bg-red-100 rounded-xl px-4 py-2 font-medium transition shrink-0"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
       </main>
 
       {/* Add Expense Modal */}
@@ -797,6 +934,31 @@ function GroupPage() {
           </div>
         )
       })()}
+
+      {/* Delete group confirm modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 backdrop-blur-sm px-4 pb-4 sm:pb-0">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-2">Delete "{groupName}"?</h2>
+            <p className="text-sm text-gray-500 mb-6">This will permanently delete all expenses, splits, settlements, and history. This cannot be undone.</p>
+            <div className="flex gap-3">
+              <button
+                onClick={handleDeleteGroup}
+                disabled={deleting}
+                className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-xl py-2.5 text-sm font-semibold transition"
+              >
+                {deleting ? 'Deleting…' : 'Delete group'}
+              </button>
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2.5 text-sm font-medium hover:bg-gray-50 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
