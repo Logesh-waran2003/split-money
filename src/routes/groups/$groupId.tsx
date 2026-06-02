@@ -771,6 +771,9 @@ function GroupPage() {
                       {(() => {
                         const mySplit = splits.find(s => s.expense_id === ex.id && s.user_id === currentUserId && !s.settled)
                         if (!mySplit || ex.paid_by === currentUserId) return null
+                        // Only show if we actually owe this person in the net balance
+                        const iOweThisPayer = balances.some(b => b.from === currentUserId && b.to === ex.paid_by)
+                        if (!iOweThisPayer) return null
                         return (
                           <button onClick={async () => {
                             await supabase.from('expense_splits').update({ settled: true }).eq('id', mySplit.id)
