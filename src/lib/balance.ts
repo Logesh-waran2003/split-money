@@ -17,11 +17,22 @@ export interface Balance {
   amount: number
 }
 
+export interface Settlement {
+  from_user: string
+  to_user: string
+  amount: number
+}
+
 /**
  * Compute net balances for a group.
  * Returns who owes whom and how much (consolidated, rounded to 2dp).
+ * Settlements (cash/UPI payments recorded separately) reduce the net balances.
  */
-export function computeBalances(expenses: Expense[], splits: Split[]): Balance[] {
+export function computeBalances(
+  expenses: Expense[],
+  splits: Split[],
+  settlements: Settlement[] = []
+): Balance[] {
   // net[userId] = positive means they are owed money, negative means they owe money
   const net: Record<string, number> = {}
 
@@ -36,6 +47,13 @@ export function computeBalances(expenses: Expense[], splits: Split[]): Balance[]
     for (const split of relevantSplits) {
       net[split.user_id] = (net[split.user_id] ?? 0) - split.amount
     }
+  }
+
+  // Settlements reduce net balances: debtor paid, so their debt shrinks;
+  // creditor received, so their credit shrinks
+  for (const s of settlements) {
+    net[s.from_user] = (net[s.from_user] ?? 0) + s.amount
+    net[s.to_user]   = (net[s.to_user]   ?? 0) - s.amount
   }
 
   // Simplify: debtors pay creditors

@@ -131,12 +131,14 @@ function DashboardPage() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <div
-              className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0"
-              style={{ backgroundColor: avatarColor(displayName) }}
-            >
-              {initials(displayName) || '?'}
-            </div>
+            <Link to="/profile">
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0 hover:ring-2 hover:ring-indigo-400 hover:ring-offset-1 transition"
+                style={{ backgroundColor: avatarColor(displayName) }}
+              >
+                {initials(displayName) || '?'}
+              </div>
+            </Link>
             <span className="text-sm font-medium text-gray-700 hidden sm:block">{displayName}</span>
           </div>
           <button

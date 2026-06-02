@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase'
 import { getSession } from '../../lib/auth'
 import { computeBalances } from '../../lib/balance'
 import type { Expense, Split } from '../../lib/balance'
+import QRCode from 'react-qr-code'
 
 export const Route = createFileRoute('/groups/$groupId')({
   beforeLoad: async () => {
@@ -21,6 +22,7 @@ interface Profile {
   id: string
   display_name: string
   phone?: string
+  upi_id?: string
 }
 
 interface ExpenseRow {
@@ -43,6 +45,12 @@ interface PendingInvite {
   id: string
   phone: string
   created_at: string
+}
+
+interface SettlementRow {
+  from_user: string
+  to_user: string
+  amount: number
 }
 
 // Deterministic color + initials helpers
@@ -101,6 +109,10 @@ function GroupPage() {
   const [invitePhone, setInvitePhone] = useState('')
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([])
 
+  const [settlements, setSettlements] = useState<SettlementRow[]>([])
+  const [settleModal, setSettleModal] = useState<{ toUserId: string; amount: number } | null>(null)
+  const [settling, setSettling] = useState(false)
+
   useEffect(() => {
     loadAll()
   }, [groupId])
@@ -126,7 +138,7 @@ function GroupPage() {
     if (memberList.length > 0) {
       const { data: profileData } = await supabase
         .from('profiles')
-        .select('id, display_name, phone')
+        .select('id, display_name, phone, upi_id')
         .in('id', memberList.map((m) => m.user_id))
       const profileMap = (profileData ?? []).reduce<Record<string, Profile>>((acc, p) => {
         acc[p.id] = p
@@ -154,6 +166,12 @@ function GroupPage() {
       .eq('group_id', groupId)
       .eq('status', 'pending')
     setPendingInvites(pendingData ?? [])
+
+    const { data: settlementsData } = await supabase
+      .from('settlements')
+      .select('from_user, to_user, amount')
+      .eq('group_id', groupId)
+    setSettlements(settlementsData ?? [])
 
     setLoading(false)
   }
@@ -292,9 +310,25 @@ function GroupPage() {
     return profiles[userId]?.display_name || userId.slice(0, 8)
   }
 
+  async function markSettled() {
+    if (!currentUserId || !settleModal) return
+    setSettling(true)
+    await supabase.from('settlements').insert({
+      group_id: groupId,
+      from_user: currentUserId,
+      to_user: settleModal.toUserId,
+      amount: settleModal.amount,
+      note: 'Settled',
+    })
+    setSettling(false)
+    setSettleModal(null)
+    loadAll()
+  }
+
   const balances = computeBalances(
     expenses.map((e): Expense => ({ id: e.id, paid_by: e.paid_by, amount: e.amount })),
-    splits.map((s): Split => ({ expense_id: s.expense_id, user_id: s.user_id, amount: s.amount, settled: s.settled }))
+    splits.map((s): Split => ({ expense_id: s.expense_id, user_id: s.user_id, amount: s.amount, settled: s.settled })),
+    settlements.map((s) => ({ from_user: s.from_user, to_user: s.to_user, amount: Number(s.amount) }))
   )
 
   // Net for current user: positive = owed, negative = owes
@@ -400,6 +434,14 @@ function GroupPage() {
                           </svg>
                           Remind
                         </a>
+                      )}
+                      {b.from === currentUserId && b.to !== currentUserId && (
+                        <button
+                          onClick={() => setSettleModal({ toUserId: b.to, amount: b.amount })}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-full px-2.5 py-1 transition"
+                        >
+                          Settle up
+                        </button>
                       )}
                     </span>
                   </li>
@@ -679,6 +721,82 @@ function GroupPage() {
           </div>
         </div>
       )}
+
+      {/* Settle Modal */}
+      {settleModal && (() => {
+        const payee = profiles[settleModal.toUserId]
+        const payeeName = displayName(settleModal.toUserId)
+        const theirUpiId = payee?.upi_id
+        const isAndroid = /android/i.test(navigator.userAgent)
+        const upiString = theirUpiId
+          ? `upi://pay?pa=${encodeURIComponent(theirUpiId)}&pn=${encodeURIComponent(payeeName)}&am=${settleModal.amount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(`Split Money - ${groupName}`)}`
+          : null
+
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 backdrop-blur-sm px-4 pb-4 sm:pb-0"
+            onClick={(e) => { if (e.target === e.currentTarget) setSettleModal(null) }}
+          >
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="text-lg font-bold text-gray-900">Settle up</h2>
+                <button onClick={() => setSettleModal(null)} className="text-gray-400 hover:text-gray-700 transition">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <p className="text-sm text-gray-600 mb-5">
+                You owe <span className="font-semibold text-gray-900">{payeeName}</span>{' '}
+                <span className="font-bold text-gray-900">₹{settleModal.amount.toFixed(2)}</span>
+              </p>
+
+              {upiString ? (
+                <div className="mb-5 space-y-4">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Pay via UPI</p>
+                  {isAndroid ? (
+                    <div className="space-y-3">
+                      <a
+                        href={upiString}
+                        target="_blank"
+                        rel="noopener"
+                        className="w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white rounded-xl py-2.5 text-sm font-semibold transition"
+                      >
+                        Pay ₹{settleModal.amount.toFixed(2)} via UPI
+                      </a>
+                      <div className="flex flex-col items-center gap-2 py-3">
+                        <QRCode value={upiString} size={160} />
+                        <p className="text-xs text-gray-400">Scan with GPay, PhonePe, or any UPI app</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-2 py-3">
+                      <QRCode value={upiString} size={160} />
+                      <p className="text-xs text-gray-400">Scan with GPay, PhonePe, or any UPI app</p>
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-400 text-center">UPI ID: {theirUpiId}</p>
+                </div>
+              ) : (
+                <div className="mb-5 rounded-xl bg-amber-50 border border-amber-100 px-4 py-3">
+                  <p className="text-sm text-amber-700">
+                    {payeeName} hasn't added a UPI ID yet. Pay them directly and mark as settled.
+                  </p>
+                </div>
+              )}
+
+              <button
+                onClick={markSettled}
+                disabled={settling}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl py-2.5 text-sm font-semibold transition"
+              >
+                {settling ? 'Recording…' : 'Mark as settled'}
+              </button>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
