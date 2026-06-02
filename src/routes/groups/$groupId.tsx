@@ -1243,12 +1243,18 @@ function GroupPage() {
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Pay via UPI</p>
                   {isAndroid ? (
                     <div className="space-y-3">
-                      <a
-                        href={upiString}
+                      <button
+                        onClick={() => { window.location.href = upiString! }}
                         className="w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white rounded-xl py-2.5 text-sm font-semibold transition"
                       >
                         Pay ₹{settleModal.amount.toFixed(2)} via UPI
-                      </a>
+                      </button>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(theirUpiId!)}
+                        className="w-full flex items-center justify-center gap-2 border border-gray-200 rounded-xl py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 transition"
+                      >
+                        Copy UPI ID: {theirUpiId}
+                      </button>
                       <div className="flex flex-col items-center gap-2 py-3">
                         <QRCode value={upiString} size={160} />
                         <p className="text-xs text-gray-400">Scan with GPay, PhonePe, or any UPI app</p>
