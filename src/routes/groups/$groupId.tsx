@@ -6,6 +6,40 @@ import { computeBalances } from '../../lib/balance'
 import type { Expense, Split } from '../../lib/balance'
 import QRCode from 'react-qr-code'
 
+const CATEGORY_META: Record<string, { emoji: string; label: string }> = {
+  food:          { emoji: '🍔', label: 'Food' },
+  transport:     { emoji: '🚗', label: 'Transport' },
+  rent:          { emoji: '🏠', label: 'Rent' },
+  utilities:     { emoji: '💡', label: 'Utilities' },
+  entertainment: { emoji: '🎬', label: 'Entertainment' },
+  shopping:      { emoji: '🛍️', label: 'Shopping' },
+  health:        { emoji: '💊', label: 'Health' },
+  travel:        { emoji: '✈️', label: 'Travel' },
+  other:         { emoji: '📦', label: 'Other' },
+}
+
+function CategoryPicker({ value, onChange }: { value: string; onChange: (c: string) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {Object.entries(CATEGORY_META).map(([key, { emoji, label }]) => (
+        <button
+          key={key}
+          type="button"
+          onClick={() => onChange(key)}
+          className={`flex items-center gap-1 text-xs font-medium rounded-full px-2.5 py-1 transition ${
+            value === key
+              ? 'bg-gray-900 text-white'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+          }`}
+        >
+          <span>{emoji}</span>
+          <span>{label}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export const Route = createFileRoute('/groups/$groupId')({
   beforeLoad: async () => {
     const session = await getSession()
@@ -30,6 +64,7 @@ interface ExpenseRow {
   description: string
   amount: number
   paid_by: string
+  category: string
   created_at: string
 }
 
@@ -97,7 +132,15 @@ function GroupPage() {
   const [showModal, setShowModal] = useState(false)
   const [desc, setDesc] = useState('')
   const [amount, setAmount] = useState('')
+  const [category, setCategory] = useState('other')
   const [adding, setAdding] = useState(false)
+
+  // Edit / delete expense
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState<{ description: string; amount: string; category: string } | null>(null)
+  const [editSaving, setEditSaving] = useState(false)
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
+  const [expenseMenuId, setExpenseMenuId] = useState<string | null>(null)
 
   // Group actions menu
   const [showMenu, setShowMenu] = useState(false)
@@ -140,7 +183,7 @@ function GroupPage() {
     const [groupRes, membersRes, expensesRes] = await Promise.all([
       supabase.from('groups').select('name, created_by').eq('id', groupId).single(),
       supabase.from('group_members').select('user_id').eq('group_id', groupId),
-      supabase.from('expenses').select('*').eq('group_id', groupId).order('created_at', { ascending: false }),
+      supabase.from('expenses').select('id, description, amount, paid_by, category, created_at').eq('group_id', groupId).order('created_at', { ascending: false }),
     ])
 
     if (groupRes.error) { setError(groupRes.error.message); setLoading(false); return }
@@ -203,7 +246,7 @@ function GroupPage() {
 
     const { data: expense, error: expErr } = await supabase
       .from('expenses')
-      .insert({ group_id: groupId, paid_by: currentUserId, amount: parsed, description: desc.trim() })
+      .insert({ group_id: groupId, paid_by: currentUserId, amount: parsed, description: desc.trim(), category })
       .select()
       .single()
 
@@ -221,8 +264,60 @@ function GroupPage() {
 
     setDesc('')
     setAmount('')
+    setCategory('other')
     setAdding(false)
     setShowModal(false)
+    loadAll()
+  }
+
+  async function deleteExpense(expenseId: string, expenseDescription: string) {
+    if (!currentUserId) return
+    const { error: delErr } = await supabase.from('expenses').delete().eq('id', expenseId)
+    if (delErr) { setError(delErr.message); return }
+    await supabase.from('activity').insert({
+      group_id: groupId,
+      user_id: currentUserId,
+      action: 'expense_deleted',
+      meta: { description: `Deleted expense: ${expenseDescription}` },
+    })
+    setDeleteConfirmId(null)
+    setExpenseMenuId(null)
+    loadAll()
+  }
+
+  async function saveEditExpense(expenseId: string) {
+    if (!editForm || !currentUserId) return
+    const parsed = parseFloat(editForm.amount)
+    if (!editForm.description.trim() || isNaN(parsed) || parsed <= 0) return
+
+    setEditSaving(true)
+    const { error: updErr } = await supabase
+      .from('expenses')
+      .update({ description: editForm.description.trim(), amount: parsed, category: editForm.category })
+      .eq('id', expenseId)
+    if (updErr) { setError(updErr.message); setEditSaving(false); return }
+
+    // Re-split equally
+    await supabase.from('expense_splits').delete().eq('expense_id', expenseId)
+    const share = Math.round((parsed / members.length) * 100) / 100
+    const splitRows = members.map((m) => ({
+      expense_id: expenseId,
+      user_id: m.user_id,
+      amount: share,
+      settled: false,
+    }))
+    await supabase.from('expense_splits').insert(splitRows)
+
+    await supabase.from('activity').insert({
+      group_id: groupId,
+      user_id: currentUserId,
+      action: 'expense_edited',
+      meta: { description: `Edited expense: ${editForm.description.trim()}` },
+    })
+
+    setEditSaving(false)
+    setEditingExpenseId(null)
+    setEditForm(null)
     loadAll()
   }
 
@@ -568,28 +663,144 @@ function GroupPage() {
             <ul className="space-y-2">
               {expenses.map((ex) => {
                 const iPaid = ex.paid_by === currentUserId
+                const isOwner = ex.paid_by === currentUserId
+                const catMeta = CATEGORY_META[ex.category] ?? CATEGORY_META.other
+                const isEditingThis = editingExpenseId === ex.id
+                const isDeletingThis = deleteConfirmId === ex.id
+                const menuOpen = expenseMenuId === ex.id
                 return (
-                  <li key={ex.id} className="bg-white rounded-2xl border border-gray-100 px-5 py-4 flex items-center gap-4">
-                    <div
-                      className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0"
-                      style={{ backgroundColor: avatarColor(ex.description) }}
-                    >
-                      {ex.description[0]?.toUpperCase() ?? '?'}
+                  <li key={ex.id} className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                    {/* Main row */}
+                    <div className="px-5 py-4 flex items-center gap-4">
+                      <div
+                        className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0"
+                        style={{ backgroundColor: avatarColor(ex.description) }}
+                      >
+                        {ex.description[0]?.toUpperCase() ?? '?'}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 truncate">
+                          <span className="mr-1.5">{catMeta.emoji}</span>{ex.description}
+                        </p>
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          paid by{' '}
+                          <span className={iPaid ? 'text-indigo-600 font-medium' : 'text-gray-600'}>
+                            {iPaid ? 'you' : displayName(ex.paid_by)}
+                          </span>
+                          <span className="mx-1">·</span>
+                          {new Date(ex.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                        </p>
+                      </div>
+                      <span className={`text-sm font-bold shrink-0 ${iPaid ? 'text-emerald-600' : 'text-gray-700'}`}>
+                        ₹{Number(ex.amount).toFixed(2)}
+                      </span>
+                      {isOwner && (
+                        <div className="relative shrink-0">
+                          <button
+                            onClick={() => setExpenseMenuId(menuOpen ? null : ex.id)}
+                            className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition"
+                            aria-label="Expense options"
+                          >
+                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                              <circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>
+                            </svg>
+                          </button>
+                          {menuOpen && (
+                            <div className="absolute right-0 top-full mt-1 w-32 bg-white rounded-xl shadow-lg border border-gray-100 py-1 z-20">
+                              <button
+                                onClick={() => {
+                                  setEditingExpenseId(ex.id)
+                                  setEditForm({ description: ex.description, amount: String(ex.amount), category: ex.category })
+                                  setDeleteConfirmId(null)
+                                  setExpenseMenuId(null)
+                                }}
+                                className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                              >
+                                <span>✏️</span> Edit
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setDeleteConfirmId(ex.id)
+                                  setEditingExpenseId(null)
+                                  setEditForm(null)
+                                  setExpenseMenuId(null)
+                                }}
+                                className="w-full text-left px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                              >
+                                <span>🗑️</span> Delete
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-900 truncate">{ex.description}</p>
-                      <p className="text-xs text-gray-400 mt-0.5">
-                        paid by{' '}
-                        <span className={iPaid ? 'text-indigo-600 font-medium' : 'text-gray-600'}>
-                          {iPaid ? 'you' : displayName(ex.paid_by)}
-                        </span>
-                        <span className="mx-1">·</span>
-                        {new Date(ex.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                      </p>
-                    </div>
-                    <span className={`text-sm font-bold shrink-0 ${iPaid ? 'text-emerald-600' : 'text-gray-700'}`}>
-                      ₹{Number(ex.amount).toFixed(2)}
-                    </span>
+
+                    {/* Delete confirm */}
+                    {isDeletingThis && (
+                      <div className="px-5 py-3 bg-red-50 border-t border-red-100">
+                        <p className="text-sm text-red-700 mb-2.5">Delete this expense? This can't be undone.</p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => deleteExpense(ex.id, ex.description)}
+                            className="flex-1 bg-red-600 hover:bg-red-700 text-white rounded-xl py-1.5 text-xs font-semibold transition"
+                          >
+                            Delete
+                          </button>
+                          <button
+                            onClick={() => setDeleteConfirmId(null)}
+                            className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-1.5 text-xs font-medium hover:bg-white transition"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Inline edit */}
+                    {isEditingThis && editForm && (
+                      <div className="px-5 py-4 border-t border-gray-100 space-y-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-500 mb-1">Description</label>
+                          <input
+                            autoFocus
+                            type="text"
+                            value={editForm.description}
+                            onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                            className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-500 mb-1">Amount (₹)</label>
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={editForm.amount}
+                            onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
+                            className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-500 mb-1.5">Category</label>
+                          <CategoryPicker value={editForm.category} onChange={(c) => setEditForm({ ...editForm, category: c })} />
+                        </div>
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            onClick={() => saveEditExpense(ex.id)}
+                            disabled={editSaving}
+                            className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl py-2 text-xs font-semibold transition"
+                          >
+                            {editSaving ? 'Saving…' : 'Save'}
+                          </button>
+                          <button
+                            onClick={() => { setEditingExpenseId(null); setEditForm(null) }}
+                            className="flex-1 border border-gray-200 text-gray-600 rounded-xl py-2 text-xs font-medium hover:bg-gray-50 transition"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </li>
                 )
               })}
@@ -816,6 +1027,10 @@ function GroupPage() {
               </button>
             </div>
             <form onSubmit={addExpense} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Category</label>
+                <CategoryPicker value={category} onChange={setCategory} />
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Description</label>
                 <input
