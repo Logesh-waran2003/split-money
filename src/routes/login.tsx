@@ -3,6 +3,9 @@ import { useState } from 'react'
 import { signIn, signInWithGoogle } from '../lib/auth'
 
 export const Route = createFileRoute('/login')({
+  validateSearch: (search: Record<string, unknown>) => ({
+    redirect: (search.redirect as string) || '',
+  }),
   component: LoginPage,
 })
 
@@ -19,6 +22,7 @@ function SplitLogo() {
 
 function LoginPage() {
   const navigate = useNavigate()
+  const { redirect: redirectTo } = Route.useSearch()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -31,7 +35,7 @@ function LoginPage() {
     setLoading(true)
     try {
       await signIn(email, password)
-      navigate({ to: '/dashboard' })
+      navigate({ to: (redirectTo as any) || '/dashboard' })
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Login failed')
     } finally {
