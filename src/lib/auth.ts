@@ -6,9 +6,22 @@ export async function signIn(email: string, password: string) {
   return data
 }
 
-export async function signUp(email: string, password: string) {
-  const { data, error } = await supabase.auth.signUp({ email, password })
+export async function signUp(email: string, password: string, displayName: string) {
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: { data: { display_name: displayName } },
+  })
   if (error) throw error
+
+  // If session is immediately active (email confirm disabled), upsert display name
+  if (data.session && data.user) {
+    await supabase.from('profiles').upsert({
+      id: data.user.id,
+      display_name: displayName,
+    })
+  }
+
   return data
 }
 

@@ -15,7 +15,11 @@ export const Route = createFileRoute('/groups/$groupId')({
 
 interface Member {
   user_id: string
-  email?: string
+}
+
+interface Profile {
+  id: string
+  display_name: string
 }
 
 interface ExpenseRow {
@@ -34,19 +38,47 @@ interface SplitRow {
   settled: boolean
 }
 
+// Deterministic color + initials helpers
+const AVATAR_COLORS = [
+  '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b',
+  '#10b981', '#3b82f6', '#ef4444', '#14b8a6',
+]
+function avatarColor(str: string): string {
+  let hash = 0
+  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash)
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length]
+}
+function initials(name: string): string {
+  return name.split(' ').slice(0, 2).map((s) => s[0]?.toUpperCase() ?? '').join('')
+}
+
+function Avatar({ name, size = 8 }: { name: string; size?: number }) {
+  const sizeClass = `w-${size} h-${size}`
+  return (
+    <div
+      className={`${sizeClass} rounded-full flex items-center justify-center text-white font-semibold shrink-0`}
+      style={{ backgroundColor: avatarColor(name), fontSize: size * 1.75 }}
+    >
+      {initials(name) || '?'}
+    </div>
+  )
+}
+
 function GroupPage() {
   const { groupId } = Route.useParams()
   const navigate = useNavigate()
 
   const [groupName, setGroupName] = useState('')
   const [members, setMembers] = useState<Member[]>([])
+  const [profiles, setProfiles] = useState<Record<string, Profile>>({})
   const [expenses, setExpenses] = useState<ExpenseRow[]>([])
   const [splits, setSplits] = useState<SplitRow[]>([])
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // New expense form
+  // Add expense modal
+  const [showModal, setShowModal] = useState(false)
   const [desc, setDesc] = useState('')
   const [amount, setAmount] = useState('')
   const [adding, setAdding] = useState(false)
@@ -68,12 +100,26 @@ function GroupPage() {
 
     if (groupRes.error) { setError(groupRes.error.message); setLoading(false); return }
     setGroupName(groupRes.data.name)
-    setMembers(membersRes.data ?? [])
+
+    const memberList: Member[] = membersRes.data ?? []
+    setMembers(memberList)
+
+    // Load profiles for all members in one shot
+    if (memberList.length > 0) {
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('id, display_name')
+        .in('id', memberList.map((m) => m.user_id))
+      const profileMap = (profileData ?? []).reduce<Record<string, Profile>>((acc, p) => {
+        acc[p.id] = p
+        return acc
+      }, {})
+      setProfiles(profileMap)
+    }
 
     const expenseList: ExpenseRow[] = expensesRes.data ?? []
     setExpenses(expenseList)
 
-    // Load splits for these expenses
     if (expenseList.length > 0) {
       const { data: splitData } = await supabase
         .from('expense_splits')
@@ -98,18 +144,12 @@ function GroupPage() {
 
     const { data: expense, error: expErr } = await supabase
       .from('expenses')
-      .insert({
-        group_id: groupId,
-        paid_by: currentUserId,
-        amount: parsed,
-        description: desc.trim(),
-      })
+      .insert({ group_id: groupId, paid_by: currentUserId, amount: parsed, description: desc.trim() })
       .select()
       .single()
 
     if (expErr) { setError(expErr.message); setAdding(false); return }
 
-    // Split equally among all members
     const share = Math.round((parsed / members.length) * 100) / 100
     const splitRows = members.map((m) => ({
       expense_id: expense.id,
@@ -117,14 +157,18 @@ function GroupPage() {
       amount: share,
       settled: false,
     }))
-
     const { error: splitErr } = await supabase.from('expense_splits').insert(splitRows)
     if (splitErr) setError(splitErr.message)
 
     setDesc('')
     setAmount('')
     setAdding(false)
+    setShowModal(false)
     loadAll()
+  }
+
+  function displayName(userId: string): string {
+    return profiles[userId]?.display_name || userId.slice(0, 8)
   }
 
   const balances = computeBalances(
@@ -132,128 +176,246 @@ function GroupPage() {
     splits.map((s): Split => ({ expense_id: s.expense_id, user_id: s.user_id, amount: s.amount, settled: s.settled }))
   )
 
-  const shortId = (uid: string) => uid.slice(0, 8)
+  // Net for current user: positive = owed, negative = owes
+  const myNet = currentUserId
+    ? balances.reduce((sum, b) => {
+        if (b.to === currentUserId) return sum + b.amount
+        if (b.from === currentUserId) return sum - b.amount
+        return sum
+      }, 0)
+    : 0
+
+  const memberAvatarPreview = members.slice(0, 3)
+  const extraMembers = members.length > 3 ? members.length - 3 : 0
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b px-6 py-4 flex items-center gap-4">
+      {/* Header */}
+      <header className="sticky top-0 z-10 bg-white border-b border-gray-100 px-6 py-3 flex items-center gap-4">
         <button
           onClick={() => navigate({ to: '/dashboard' })}
-          className="text-sm text-gray-400 hover:text-gray-700"
+          className="text-gray-400 hover:text-gray-700 transition flex items-center gap-1 text-sm"
         >
-          ← Back
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+          </svg>
+          Back
         </button>
-        <h1 className="text-xl font-bold">{groupName || 'Group'}</h1>
+        <h1 className="font-bold text-gray-900 text-lg flex-1 truncate">{groupName || '…'}</h1>
+        {/* Stacked member avatars */}
+        <div className="flex items-center">
+          <div className="flex -space-x-2">
+            {memberAvatarPreview.map((m) => (
+              <div
+                key={m.user_id}
+                title={displayName(m.user_id)}
+                className="w-7 h-7 rounded-full border-2 border-white flex items-center justify-center text-white text-xs font-semibold"
+                style={{ backgroundColor: avatarColor(displayName(m.user_id)) }}
+              >
+                {initials(displayName(m.user_id))}
+              </div>
+            ))}
+            {extraMembers > 0 && (
+              <div className="w-7 h-7 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-xs font-semibold text-gray-600">
+                +{extraMembers}
+              </div>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={() => setShowModal(true)}
+          className="ml-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-xl px-4 py-2 transition shrink-0"
+        >
+          Add expense
+        </button>
       </header>
 
-      <main className="max-w-2xl mx-auto px-4 py-8 space-y-8">
+      <main className="max-w-2xl mx-auto px-4 py-8 space-y-6">
         {error && (
-          <p className="text-sm text-red-600 bg-red-50 rounded px-3 py-2">{error}</p>
+          <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-xl px-4 py-3">
+            {error}
+          </div>
         )}
 
-        {/* Add expense */}
-        <section>
-          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
-            Add Expense
-          </h2>
-          <form onSubmit={addExpense} className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Description"
-              value={desc}
-              onChange={(e) => setDesc(e.target.value)}
-              className="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <input
-              type="number"
-              placeholder="Amount"
-              min="0.01"
-              step="0.01"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              className="w-28 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <button
-              type="submit"
-              disabled={adding}
-              className="bg-blue-600 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-            >
-              {adding ? '...' : 'Add'}
-            </button>
-          </form>
-          <p className="text-xs text-gray-400 mt-1">Split equally among {members.length} member{members.length !== 1 ? 's' : ''}</p>
-        </section>
-
-        {/* Balances */}
-        {balances.length > 0 && (
-          <section>
-            <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
-              Who Owes Who
-            </h2>
-            <ul className="space-y-2">
-              {balances.map((b, i) => (
-                <li key={i} className="bg-white rounded-xl border px-5 py-3 text-sm flex justify-between">
-                  <span>
-                    <span className="font-mono text-gray-500">{shortId(b.from)}</span>
-                    <span className="text-gray-400 mx-2">owes</span>
-                    <span className="font-mono text-gray-500">{shortId(b.to)}</span>
-                  </span>
-                  <span className="font-semibold text-orange-600">₹{b.amount.toFixed(2)}</span>
-                </li>
-              ))}
-            </ul>
-          </section>
+        {/* Balance summary card */}
+        {!loading && (
+          <div
+            className={`rounded-2xl px-6 py-5 ${
+              myNet > 0.005
+                ? 'bg-emerald-50 border border-emerald-100'
+                : myNet < -0.005
+                ? 'bg-amber-50 border border-amber-100'
+                : 'bg-gray-100 border border-gray-200'
+            }`}
+          >
+            <p className={`text-lg font-bold mb-0.5 ${myNet > 0.005 ? 'text-emerald-700' : myNet < -0.005 ? 'text-amber-700' : 'text-gray-500'}`}>
+              {myNet > 0.005
+                ? `You are owed ₹${myNet.toFixed(2)}`
+                : myNet < -0.005
+                ? `You owe ₹${Math.abs(myNet).toFixed(2)}`
+                : 'All settled up!'}
+            </p>
+            {balances.length > 0 && (
+              <ul className="mt-3 space-y-1.5">
+                {balances.map((b, i) => (
+                  <li key={i} className="text-sm text-gray-600 flex justify-between items-center">
+                    <span>
+                      <span className={b.from === currentUserId ? 'font-semibold text-gray-900' : ''}>{displayName(b.from)}</span>
+                      <span className="text-gray-400 mx-1.5">→</span>
+                      <span className={b.to === currentUserId ? 'font-semibold text-gray-900' : ''}>{displayName(b.to)}</span>
+                    </span>
+                    <span className="font-semibold text-gray-700 ml-4">₹{b.amount.toFixed(2)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
 
-        {/* Members */}
+        {/* Expenses list */}
         <section>
-          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
-            Members ({members.length})
-          </h2>
-          <ul className="space-y-1">
-            {members.map((m) => (
-              <li key={m.user_id} className="text-sm font-mono text-gray-600 bg-white rounded-lg border px-4 py-2">
-                {m.user_id === currentUserId ? (
-                  <span>{shortId(m.user_id)} <span className="text-blue-500 text-xs">(you)</span></span>
-                ) : shortId(m.user_id)}
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        {/* Expenses */}
-        <section>
-          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
-            Expenses
-          </h2>
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Expenses</h2>
           {loading ? (
-            <p className="text-sm text-gray-400">Loading...</p>
+            <div className="space-y-3">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="bg-white rounded-2xl border border-gray-100 h-16 animate-pulse" />
+              ))}
+            </div>
           ) : expenses.length === 0 ? (
-            <p className="text-sm text-gray-400">No expenses yet.</p>
+            <div className="bg-white rounded-2xl border border-gray-100 px-5 py-10 text-center">
+              <p className="text-gray-400 text-sm">No expenses yet.</p>
+              <button
+                onClick={() => setShowModal(true)}
+                className="mt-3 text-sm text-indigo-600 font-medium hover:underline"
+              >
+                Add the first one
+              </button>
+            </div>
           ) : (
             <ul className="space-y-2">
-              {expenses.map((ex) => (
-                <li key={ex.id} className="bg-white rounded-xl border px-5 py-3">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <p className="text-sm font-medium">{ex.description}</p>
+              {expenses.map((ex) => {
+                const iPaid = ex.paid_by === currentUserId
+                return (
+                  <li key={ex.id} className="bg-white rounded-2xl border border-gray-100 px-5 py-4 flex items-center gap-4">
+                    <div
+                      className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0"
+                      style={{ backgroundColor: avatarColor(ex.description) }}
+                    >
+                      {ex.description[0]?.toUpperCase() ?? '?'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-gray-900 truncate">{ex.description}</p>
                       <p className="text-xs text-gray-400 mt-0.5">
-                        paid by <span className="font-mono">{shortId(ex.paid_by)}</span>
-                        {ex.paid_by === currentUserId && (
-                          <span className="text-blue-500 ml-1">(you)</span>
-                        )}
-                        {' · '}
-                        {new Date(ex.created_at).toLocaleDateString()}
+                        paid by{' '}
+                        <span className={iPaid ? 'text-indigo-600 font-medium' : 'text-gray-600'}>
+                          {iPaid ? 'you' : displayName(ex.paid_by)}
+                        </span>
+                        <span className="mx-1">·</span>
+                        {new Date(ex.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
                       </p>
                     </div>
-                    <span className="text-sm font-semibold">₹{Number(ex.amount).toFixed(2)}</span>
-                  </div>
-                </li>
-              ))}
+                    <span className={`text-sm font-bold shrink-0 ${iPaid ? 'text-emerald-600' : 'text-gray-700'}`}>
+                      ₹{Number(ex.amount).toFixed(2)}
+                    </span>
+                  </li>
+                )
+              })}
             </ul>
           )}
         </section>
+
+        {/* Members */}
+        <section>
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
+            Members ({members.length})
+          </h2>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {members.map((m) => {
+              const name = displayName(m.user_id)
+              const isMe = m.user_id === currentUserId
+              return (
+                <div
+                  key={m.user_id}
+                  className="bg-white rounded-2xl border border-gray-100 px-4 py-3 flex items-center gap-3"
+                >
+                  <div
+                    className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-semibold shrink-0"
+                    style={{ backgroundColor: avatarColor(name) }}
+                  >
+                    {initials(name) || '?'}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-gray-900 truncate">{name}</p>
+                    {isMe && <p className="text-xs text-indigo-500">you</p>}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </section>
       </main>
+
+      {/* Add Expense Modal */}
+      {showModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 backdrop-blur-sm px-4 pb-4 sm:pb-0"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowModal(false) }}
+        >
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold text-gray-900">Add expense</h2>
+              <button
+                onClick={() => setShowModal(false)}
+                className="text-gray-400 hover:text-gray-700 transition"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <form onSubmit={addExpense} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Description</label>
+                <input
+                  type="text"
+                  autoFocus
+                  required
+                  placeholder="e.g. Dinner, Cab, Hotel…"
+                  value={desc}
+                  onChange={(e) => setDesc(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Amount (₹)</label>
+                <input
+                  type="number"
+                  required
+                  min="0.01"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                />
+              </div>
+              <p className="text-xs text-gray-400">
+                Split equally among {members.length} {members.length === 1 ? 'member' : 'members'}
+                {members.length > 0 && amount && !isNaN(parseFloat(amount)) && parseFloat(amount) > 0 && (
+                  <> · ₹{(parseFloat(amount) / members.length).toFixed(2)} each</>
+                )}
+              </p>
+              <button
+                type="submit"
+                disabled={adding}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl py-2.5 text-sm font-semibold transition"
+              >
+                {adding ? 'Adding…' : 'Add expense'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
