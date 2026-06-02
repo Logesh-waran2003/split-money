@@ -1245,8 +1245,6 @@ function GroupPage() {
                     <div className="space-y-3">
                       <a
                         href={upiString}
-                        target="_blank"
-                        rel="noopener"
                         className="w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white rounded-xl py-2.5 text-sm font-semibold transition"
                       >
                         Pay ₹{settleModal.amount.toFixed(2)} via UPI
