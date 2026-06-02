@@ -20,6 +20,7 @@ interface Group {
 interface Profile {
   id: string
   display_name: string
+  avatar_url?: string
 }
 
 // Deterministic avatar color from any string
@@ -58,7 +59,7 @@ function DashboardPage() {
     if (!user) return
 
     const [profileRes, groupsRes] = await Promise.all([
-      supabase.from('profiles').select('id, display_name').eq('id', user.id).single(),
+      supabase.from('profiles').select('id, display_name, avatar_url').eq('id', user.id).single(),
       supabase.from('groups').select('id, name, created_at').order('created_at', { ascending: false }),
     ])
 
@@ -132,12 +133,20 @@ function DashboardPage() {
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <Link to="/profile">
-              <div
-                className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0 hover:ring-2 hover:ring-indigo-400 hover:ring-offset-1 transition"
-                style={{ backgroundColor: avatarColor(displayName) }}
-              >
-                {initials(displayName) || '?'}
-              </div>
+              {currentProfile?.avatar_url ? (
+                <img
+                  src={currentProfile.avatar_url}
+                  alt={displayName}
+                  className="w-8 h-8 rounded-full object-cover shrink-0 hover:ring-2 hover:ring-indigo-400 hover:ring-offset-1 transition"
+                />
+              ) : (
+                <div
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0 hover:ring-2 hover:ring-indigo-400 hover:ring-offset-1 transition"
+                  style={{ backgroundColor: avatarColor(displayName) }}
+                >
+                  {initials(displayName) || '?'}
+                </div>
+              )}
             </Link>
             <span className="text-sm font-medium text-gray-700 hidden sm:block">{displayName}</span>
           </div>

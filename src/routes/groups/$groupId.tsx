@@ -57,6 +57,7 @@ interface Profile {
   display_name: string
   phone?: string
   upi_id?: string
+  avatar_url?: string
 }
 
 interface ExpenseRow {
@@ -106,8 +107,17 @@ function initials(name: string): string {
   return name.split(' ').slice(0, 2).map((s) => s[0]?.toUpperCase() ?? '').join('')
 }
 
-function Avatar({ name, size = 8 }: { name: string; size?: number }) {
+function Avatar({ name, avatarUrl, size = 8 }: { name: string; avatarUrl?: string; size?: number }) {
   const sizeClass = `w-${size} h-${size}`
+  if (avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt={name}
+        className={`${sizeClass} rounded-full object-cover shrink-0`}
+      />
+    )
+  }
   return (
     <div
       className={`${sizeClass} rounded-full flex items-center justify-center text-white font-semibold shrink-0`}
@@ -230,7 +240,7 @@ function GroupPage() {
     if (memberList.length > 0) {
       const { data: profileData } = await supabase
         .from('profiles')
-        .select('id, display_name, phone, upi_id')
+        .select('id, display_name, phone, upi_id, avatar_url')
         .in('id', memberList.map((m) => m.user_id))
       const profileMap = (profileData ?? []).reduce<Record<string, Profile>>((acc, p) => {
         acc[p.id] = p
@@ -538,16 +548,27 @@ function GroupPage() {
         {/* Stacked member avatars */}
         <div className="flex items-center">
           <div className="flex -space-x-2">
-            {memberAvatarPreview.map((m) => (
-              <div
-                key={m.user_id}
-                title={displayName(m.user_id)}
-                className="w-7 h-7 rounded-full border-2 border-white flex items-center justify-center text-white text-xs font-semibold"
-                style={{ backgroundColor: avatarColor(displayName(m.user_id)) }}
-              >
-                {initials(displayName(m.user_id))}
-              </div>
-            ))}
+            {memberAvatarPreview.map((m) => {
+              const url = profiles[m.user_id]?.avatar_url
+              return url ? (
+                <img
+                  key={m.user_id}
+                  src={url}
+                  alt={displayName(m.user_id)}
+                  title={displayName(m.user_id)}
+                  className="w-7 h-7 rounded-full border-2 border-white object-cover shrink-0"
+                />
+              ) : (
+                <div
+                  key={m.user_id}
+                  title={displayName(m.user_id)}
+                  className="w-7 h-7 rounded-full border-2 border-white flex items-center justify-center text-white text-xs font-semibold"
+                  style={{ backgroundColor: avatarColor(displayName(m.user_id)) }}
+                >
+                  {initials(displayName(m.user_id))}
+                </div>
+              )
+            })}
             {extraMembers > 0 && (
               <div className="w-7 h-7 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-xs font-semibold text-gray-600">
                 +{extraMembers}
@@ -902,16 +923,20 @@ function GroupPage() {
               const name = displayName(m.user_id)
               const isMe = m.user_id === currentUserId
               return (
-                <div
-                  key={m.user_id}
-                  className="bg-white rounded-2xl border border-gray-100 px-4 py-3 flex items-center gap-3"
-                >
                   <div
-                    className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-semibold shrink-0"
-                    style={{ backgroundColor: avatarColor(name) }}
+                    key={m.user_id}
+                    className="bg-white rounded-2xl border border-gray-100 px-4 py-3 flex items-center gap-3"
                   >
-                    {initials(name) || '?'}
-                  </div>
+                  {profiles[m.user_id]?.avatar_url ? (
+                    <img src={profiles[m.user_id]!.avatar_url!} alt={name} className="w-9 h-9 rounded-full object-cover shrink-0" />
+                  ) : (
+                    <div
+                      className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-semibold shrink-0"
+                      style={{ backgroundColor: avatarColor(name) }}
+                    >
+                      {initials(name) || '?'}
+                    </div>
+                  )}
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">{name}</p>
                     {isMe && <p className="text-xs text-indigo-500">you</p>}
