@@ -1237,8 +1237,36 @@ function GroupPage() {
         const payeeName = displayName(settleModal.toUserId)
         const theirUpiId = payee?.upi_id
         const isAndroid = /android/i.test(navigator.userAgent)
-        const upiString = theirUpiId
-          ? `upi://pay?pa=${theirUpiId}&pn=${encodeURIComponent(payeeName)}&am=${settleModal.amount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(`Split Money - ${groupName}`)}`
+        const am = settleModal.amount.toFixed(2)
+        const tn = encodeURIComponent(`Split Money - ${groupName}`)
+        const pn = encodeURIComponent(payeeName)
+        const fallbackBase = 'https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3D'
+
+        const upiApps = theirUpiId ? [
+          {
+            name: 'GPay',
+            color: '#4285F4',
+            href: `intent://upi/pay?pa=${theirUpiId}&pn=${pn}&am=${am}&cu=INR&tn=${tn}#Intent;scheme=tez;package=com.google.android.apps.nbu.paisa.user;S.browser_fallback_url=${fallbackBase}com.google.android.apps.nbu.paisa.user;end`,
+          },
+          {
+            name: 'PhonePe',
+            color: '#5f259f',
+            href: `intent://pay?pa=${theirUpiId}&pn=${pn}&am=${am}&cu=INR&tn=${tn}#Intent;scheme=phonepe;package=com.phonepe.app;S.browser_fallback_url=${fallbackBase}com.phonepe.app;end`,
+          },
+          {
+            name: 'Paytm',
+            color: '#00BAF2',
+            href: `intent://pay?pa=${theirUpiId}&pn=${pn}&am=${am}&cu=INR&tn=${tn}#Intent;scheme=paytmmp;package=net.one97.paytm;S.browser_fallback_url=${fallbackBase}net.one97.paytm;end`,
+          },
+          {
+            name: 'BHIM',
+            color: '#1a237e',
+            href: `intent://pay?pa=${theirUpiId}&pn=${pn}&am=${am}&cu=INR&tn=${tn}#Intent;scheme=upi;package=in.org.npci.upiapp;S.browser_fallback_url=${fallbackBase}in.org.npci.upiapp;end`,
+          },
+        ] : []
+
+        const genericUpiString = theirUpiId
+          ? `upi://pay?pa=${theirUpiId}&pn=${pn}&am=${am}&cu=INR&tn=${tn}`
           : null
 
         return (
@@ -1261,35 +1289,38 @@ function GroupPage() {
                 <span className="font-bold text-gray-900">₹{settleModal.amount.toFixed(2)}</span>
               </p>
 
-              {upiString ? (
+              {upiApps.length > 0 ? (
                 <div className="mb-5 space-y-4">
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Pay via UPI</p>
                   {isAndroid ? (
-                    <div className="space-y-3">
-                      <button
-                        onClick={() => { window.location.href = upiString! }}
-                        className="w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white rounded-xl py-2.5 text-sm font-semibold transition"
-                      >
-                        Pay ₹{settleModal.amount.toFixed(2)} via UPI
-                      </button>
+                    <div className="space-y-2">
+                      <p className="text-xs text-gray-500 mb-2">Choose your UPI app:</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {upiApps.map((app) => (
+                          <a
+                            key={app.name}
+                            href={app.href}
+                            className="flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold text-white transition"
+                            style={{ backgroundColor: app.color }}
+                          >
+                            {app.name}
+                          </a>
+                        ))}
+                      </div>
                       <button
                         onClick={() => navigator.clipboard.writeText(theirUpiId!)}
-                        className="w-full flex items-center justify-center gap-2 border border-gray-200 rounded-xl py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 transition"
+                        className="w-full border border-gray-200 rounded-xl py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 transition"
                       >
                         Copy UPI ID: {theirUpiId}
                       </button>
-                      <div className="flex flex-col items-center gap-2 py-3">
-                        <QRCode value={upiString} size={160} />
-                        <p className="text-xs text-gray-400">Scan with GPay, PhonePe, or any UPI app</p>
-                      </div>
                     </div>
                   ) : (
                     <div className="flex flex-col items-center gap-2 py-3">
-                      <QRCode value={upiString} size={160} />
+                      <QRCode value={genericUpiString!} size={160} />
                       <p className="text-xs text-gray-400">Scan with GPay, PhonePe, or any UPI app</p>
+                      <p className="text-xs text-gray-400">UPI ID: {theirUpiId}</p>
                     </div>
                   )}
-                  <p className="text-xs text-gray-400 text-center">UPI ID: {theirUpiId}</p>
                 </div>
               ) : (
                 <div className="mb-5 rounded-xl bg-amber-50 border border-amber-100 px-4 py-3">
