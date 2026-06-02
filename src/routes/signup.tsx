@@ -21,6 +21,7 @@ function SplitLogo() {
 function SignupPage() {
   const navigate = useNavigate()
   const [displayName, setDisplayName] = useState('')
+  const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -32,13 +33,22 @@ function SignupPage() {
     setLoading(true)
     try {
       const data = await signUp(email, password, displayName.trim())
-      // If email confirmation is required, profile is created via trigger with display_name in metadata.
-      // If session is immediate, signUp() already upserted — but upsert again to be safe.
       if (data.user) {
-        await supabase.from('profiles').upsert({
+        const upsertData: { id: string; display_name: string; phone?: string } = {
           id: data.user.id,
           display_name: displayName.trim() || email.split('@')[0],
-        })
+        }
+        if (phone.trim()) upsertData.phone = phone.trim()
+
+        await supabase.from('profiles').upsert(upsertData)
+
+        // Accept any pending group invites for this phone number
+        if (phone.trim()) {
+          await supabase.rpc('accept_phone_invites', {
+            phone_input: phone.trim(),
+            new_user_id: data.user.id,
+          })
+        }
       }
       navigate({ to: '/dashboard' })
     } catch (err: unknown) {
@@ -74,6 +84,20 @@ function SignupPage() {
                 className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
                 placeholder="Ravi Kumar"
               />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Phone number <span className="text-gray-400 font-normal">(optional)</span>
+              </label>
+              <input
+                type="tel"
+                autoComplete="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                placeholder="+91 98765 43210"
+              />
+              <p className="mt-1 text-xs text-gray-400">Used so friends can invite you by phone</p>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">Email</label>

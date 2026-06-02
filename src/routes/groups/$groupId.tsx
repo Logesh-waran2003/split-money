@@ -20,6 +20,7 @@ interface Member {
 interface Profile {
   id: string
   display_name: string
+  phone?: string
 }
 
 interface ExpenseRow {
@@ -36,6 +37,12 @@ interface SplitRow {
   user_id: string
   amount: number
   settled: boolean
+}
+
+interface PendingInvite {
+  id: string
+  phone: string
+  created_at: string
 }
 
 // Deterministic color + initials helpers
@@ -90,6 +97,9 @@ function GroupPage() {
     type: 'success' | 'not_found' | 'already_member' | 'error'
     message: string
   } | null>(null)
+  const [inviteTab, setInviteTab] = useState<'email' | 'phone'>('email')
+  const [invitePhone, setInvitePhone] = useState('')
+  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([])
 
   useEffect(() => {
     loadAll()
@@ -116,7 +126,7 @@ function GroupPage() {
     if (memberList.length > 0) {
       const { data: profileData } = await supabase
         .from('profiles')
-        .select('id, display_name')
+        .select('id, display_name, phone')
         .in('id', memberList.map((m) => m.user_id))
       const profileMap = (profileData ?? []).reduce<Record<string, Profile>>((acc, p) => {
         acc[p.id] = p
@@ -137,6 +147,13 @@ function GroupPage() {
     } else {
       setSplits([])
     }
+
+    const { data: pendingData } = await supabase
+      .from('group_invites')
+      .select('id, phone, created_at')
+      .eq('group_id', groupId)
+      .eq('status', 'pending')
+    setPendingInvites(pendingData ?? [])
 
     setLoading(false)
   }
@@ -219,6 +236,51 @@ function GroupPage() {
     setInviteEmail('')
     setInviting(false)
     loadAll()
+  }
+
+  async function inviteByPhone() {
+    if (!invitePhone.trim()) return
+    setInviting(true)
+    setInviteResult(null)
+
+    const { data: userId } = await supabase.rpc('find_user_by_phone', {
+      phone_input: invitePhone.trim(),
+    })
+
+    if (userId) {
+      const alreadyMember = members.some((m) => m.user_id === userId)
+      if (alreadyMember) {
+        setInviteResult({ type: 'already_member', message: 'Already in this group.' })
+      } else {
+        const { error: addErr } = await supabase
+          .from('group_members')
+          .insert({ group_id: groupId, user_id: userId })
+        if (addErr) {
+          setInviteResult({ type: 'error', message: addErr.message })
+        } else {
+          setInviteResult({ type: 'success', message: 'Added to group!' })
+          setInvitePhone('')
+          loadAll()
+        }
+      }
+    } else {
+      const { data: { user } } = await supabase.auth.getUser()
+      await supabase.from('group_invites').insert({
+        group_id: groupId,
+        invited_by: user!.id,
+        phone: invitePhone.trim(),
+      })
+      const msg = `Hey! ${displayName(currentUserId!)} added you to "${groupName}" on Split Money to track shared expenses. Sign up here: ${window.location.origin}`
+      const waUrl = `https://wa.me/${invitePhone.trim().replace(/\D/g, '')}?text=${encodeURIComponent(msg)}`
+      window.open(waUrl, '_blank')
+      setInviteResult({
+        type: 'not_found',
+        message: `Invite saved. WhatsApp opened — they'll be added automatically when they sign up with this number.`,
+      })
+      setInvitePhone('')
+      loadAll()
+    }
+    setInviting(false)
   }
 
   function whatsappReminderLink(debtorName: string, amount: number, groupName: string): string {
@@ -422,6 +484,9 @@ function GroupPage() {
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">{name}</p>
                     {isMe && <p className="text-xs text-indigo-500">you</p>}
+                    {profiles[m.user_id]?.phone && (
+                      <p className="text-xs text-gray-400 truncate">{profiles[m.user_id].phone}</p>
+                    )}
                   </div>
                 </div>
               )
@@ -434,28 +499,77 @@ function GroupPage() {
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
             Invite to group
           </h2>
-          <div className="bg-white rounded-2xl border border-gray-100 px-5 py-5">
-            <div className="flex gap-2">
-              <input
-                type="email"
-                placeholder="Email address…"
-                value={inviteEmail}
-                onChange={(e) => { setInviteEmail(e.target.value); setInviteResult(null) }}
-                onKeyDown={(e) => e.key === 'Enter' && inviteMember()}
-                className="flex-1 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-              />
+          <div className="bg-white rounded-2xl border border-gray-100 px-5 py-5 space-y-4">
+            {/* Tab toggle */}
+            <div className="flex gap-1 bg-gray-100 rounded-xl p-1 w-fit">
               <button
-                onClick={inviteMember}
-                disabled={inviting || !inviteEmail.trim()}
-                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-xl px-4 py-2.5 transition shrink-0"
+                onClick={() => { setInviteTab('email'); setInviteResult(null) }}
+                className={`text-sm font-medium rounded-lg px-4 py-1.5 transition ${
+                  inviteTab === 'email'
+                    ? 'bg-white text-indigo-600 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
               >
-                {inviting ? 'Inviting…' : 'Invite'}
+                By email
+              </button>
+              <button
+                onClick={() => { setInviteTab('phone'); setInviteResult(null) }}
+                className={`text-sm font-medium rounded-lg px-4 py-1.5 transition ${
+                  inviteTab === 'phone'
+                    ? 'bg-white text-indigo-600 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                By phone
               </button>
             </div>
 
+            {/* Email tab */}
+            {inviteTab === 'email' && (
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  placeholder="Email address…"
+                  value={inviteEmail}
+                  onChange={(e) => { setInviteEmail(e.target.value); setInviteResult(null) }}
+                  onKeyDown={(e) => e.key === 'Enter' && inviteMember()}
+                  className="flex-1 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                />
+                <button
+                  onClick={inviteMember}
+                  disabled={inviting || !inviteEmail.trim()}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-xl px-4 py-2.5 transition shrink-0"
+                >
+                  {inviting ? 'Inviting…' : 'Invite'}
+                </button>
+              </div>
+            )}
+
+            {/* Phone tab */}
+            {inviteTab === 'phone' && (
+              <div className="flex gap-2">
+                <input
+                  type="tel"
+                  placeholder="+91 98765 43210"
+                  value={invitePhone}
+                  onChange={(e) => { setInvitePhone(e.target.value); setInviteResult(null) }}
+                  onKeyDown={(e) => e.key === 'Enter' && inviteByPhone()}
+                  className="flex-1 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                />
+                <button
+                  onClick={inviteByPhone}
+                  disabled={inviting || !invitePhone.trim()}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-xl px-4 py-2.5 transition shrink-0"
+                >
+                  {inviting ? 'Inviting…' : 'Invite'}
+                </button>
+              </div>
+            )}
+
+            {/* Result message */}
             {inviteResult && (
               <div
-                className={`mt-3 text-sm rounded-xl px-4 py-3 ${
+                className={`text-sm rounded-xl px-4 py-3 ${
                   inviteResult.type === 'success'
                     ? 'bg-emerald-50 text-emerald-700'
                     : inviteResult.type === 'not_found'
@@ -465,7 +579,7 @@ function GroupPage() {
                     : 'bg-red-50 text-red-600'
                 }`}
               >
-                {inviteResult.type === 'not_found' ? (
+                {inviteResult.type === 'not_found' && inviteTab === 'email' ? (
                   <span>
                     No account found.{' '}
                     <button
@@ -482,6 +596,25 @@ function GroupPage() {
               </div>
             )}
           </div>
+
+          {/* Pending phone invites */}
+          {pendingInvites.length > 0 && (
+            <div className="mt-3 bg-white rounded-2xl border border-gray-100 px-5 py-4">
+              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+                Pending invites ({pendingInvites.length})
+              </h3>
+              <ul className="space-y-2">
+                {pendingInvites.map((inv) => (
+                  <li key={inv.id} className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-gray-700">{inv.phone}</span>
+                    <span className="text-xs font-medium text-amber-600 bg-amber-50 border border-amber-100 rounded-full px-2.5 py-0.5 shrink-0">
+                      Waiting for signup
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       </main>
 
