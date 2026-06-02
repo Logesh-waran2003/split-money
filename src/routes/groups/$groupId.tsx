@@ -76,12 +76,6 @@ interface SplitRow {
   settled: boolean
 }
 
-interface PendingInvite {
-  id: string
-  phone: string
-  created_at: string
-}
-
 interface SettlementRow {
   from_user: string
   to_user: string
@@ -159,16 +153,16 @@ function GroupPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
-  // Invite by email
-  const [inviteEmail, setInviteEmail] = useState('')
-  const [inviting, setInviting] = useState(false)
-  const [inviteResult, setInviteResult] = useState<{
-    type: 'success' | 'not_found' | 'already_member' | 'error'
-    message: string
-  } | null>(null)
-  const [inviteTab, setInviteTab] = useState<'email' | 'phone'>('email')
-  const [invitePhone, setInvitePhone] = useState('')
-  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([])
+  // Invite link
+  const [inviteUrl, setInviteUrl] = useState('')
+  const [generatingLink, setGeneratingLink] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  // User search
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<{ id: string; display_name: string; phone?: string }[]>([])
+  const [searching, setSearching] = useState(false)
+  const [addingUserId, setAddingUserId] = useState<string | null>(null)
 
   const [settlements, setSettlements] = useState<SettlementRow[]>([])
   const [settleModal, setSettleModal] = useState<{ toUserId: string; amount: number } | null>(null)
@@ -185,6 +179,23 @@ function GroupPage() {
       setMemberInputs({})
     }
   }, [showModal])
+
+  useEffect(() => {
+    if (!searchQuery.trim()) { setSearchResults([]); return }
+    const timeout = setTimeout(async () => {
+      setSearching(true)
+      const memberIds = members.map((m) => m.user_id)
+      const { data } = await supabase
+        .from('profiles')
+        .select('id, display_name, phone')
+        .or(`display_name.ilike.%${searchQuery}%,phone.ilike.%${searchQuery}%`)
+        .not('id', 'in', `(${memberIds.join(',')})`)
+        .limit(5)
+      setSearchResults(data ?? [])
+      setSearching(false)
+    }, 400)
+    return () => clearTimeout(timeout)
+  }, [searchQuery, members])
 
   async function loadAll() {
     setLoading(true)
@@ -229,13 +240,6 @@ function GroupPage() {
     } else {
       setSplits([])
     }
-
-    const { data: pendingData } = await supabase
-      .from('group_invites')
-      .select('id, phone, created_at')
-      .eq('group_id', groupId)
-      .eq('status', 'pending')
-    setPendingInvites(pendingData ?? [])
 
     const { data: settlementsData } = await supabase
       .from('settlements')
@@ -351,95 +355,39 @@ function GroupPage() {
     loadAll()
   }
 
-  async function inviteMember() {
-    if (!inviteEmail.trim()) return
-    setInviting(true)
-    setInviteResult(null)
-
-    const { data: userId, error } = await supabase.rpc('find_user_by_email', {
-      email_input: inviteEmail.trim(),
-    })
-
-    if (error) {
-      setInviteResult({ type: 'error', message: error.message })
-      setInviting(false)
-      return
+  async function generateInviteLink() {
+    if (!currentUserId) return
+    setGeneratingLink(true)
+    const { data, error } = await supabase
+      .from('group_invite_links')
+      .insert({ group_id: groupId, created_by: currentUserId })
+      .select('token')
+      .single()
+    if (!error && data) {
+      setInviteUrl(`${window.location.origin}/invite/${data.token}`)
     }
-    if (!userId) {
-      setInviteResult({
-        type: 'not_found',
-        message: `No account found for ${inviteEmail}. Share this link so they can sign up: ${window.location.origin}`,
-      })
-      setInviting(false)
-      return
-    }
-
-    const alreadyMember = members.some((m) => m.user_id === userId)
-    if (alreadyMember) {
-      setInviteResult({ type: 'already_member', message: 'Already in this group.' })
-      setInviting(false)
-      return
-    }
-
-    const { error: addErr } = await supabase
-      .from('group_members')
-      .insert({ group_id: groupId, user_id: userId })
-
-    if (addErr) {
-      setInviteResult({ type: 'error', message: addErr.message })
-      setInviting(false)
-      return
-    }
-
-    setInviteResult({ type: 'success', message: 'Added successfully!' })
-    setInviteEmail('')
-    setInviting(false)
-    loadAll()
+    setGeneratingLink(false)
   }
 
-  async function inviteByPhone() {
-    if (!invitePhone.trim()) return
-    setInviting(true)
-    setInviteResult(null)
+  async function copyLink() {
+    await navigator.clipboard.writeText(inviteUrl)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
 
-    const { data: userId } = await supabase.rpc('find_user_by_phone', {
-      phone_input: invitePhone.trim(),
+  async function addUserToGroup(userId: string) {
+    setAddingUserId(userId)
+    await supabase.from('group_members').insert({ group_id: groupId, user_id: userId })
+    await supabase.from('activity').insert({
+      group_id: groupId,
+      user_id: userId,
+      action: 'member_joined',
+      meta: { description: 'Added by group member' },
     })
-
-    if (userId) {
-      const alreadyMember = members.some((m) => m.user_id === userId)
-      if (alreadyMember) {
-        setInviteResult({ type: 'already_member', message: 'Already in this group.' })
-      } else {
-        const { error: addErr } = await supabase
-          .from('group_members')
-          .insert({ group_id: groupId, user_id: userId })
-        if (addErr) {
-          setInviteResult({ type: 'error', message: addErr.message })
-        } else {
-          setInviteResult({ type: 'success', message: 'Added to group!' })
-          setInvitePhone('')
-          loadAll()
-        }
-      }
-    } else {
-      const { data: { user } } = await supabase.auth.getUser()
-      await supabase.from('group_invites').insert({
-        group_id: groupId,
-        invited_by: user!.id,
-        phone: invitePhone.trim(),
-      })
-      const msg = `Hey! ${displayName(currentUserId!)} added you to "${groupName}" on Split Money to track shared expenses. Sign up here: ${window.location.origin}`
-      const waUrl = `https://wa.me/${invitePhone.trim().replace(/\D/g, '')}?text=${encodeURIComponent(msg)}`
-      window.open(waUrl, '_blank')
-      setInviteResult({
-        type: 'not_found',
-        message: `Invite saved. WhatsApp opened — they'll be added automatically when they sign up with this number.`,
-      })
-      setInvitePhone('')
-      loadAll()
-    }
-    setInviting(false)
+    setAddingUserId(null)
+    setSearchQuery('')
+    setSearchResults([])
+    loadAll()
   }
 
   function whatsappReminderLink(debtorName: string, amount: number, groupName: string): string {
@@ -871,128 +819,80 @@ function GroupPage() {
           </div>
         </section>
 
-        {/* Invite to group */}
-        <section>
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
-            Invite to group
-          </h2>
-          <div className="bg-white rounded-2xl border border-gray-100 px-5 py-5 space-y-4">
-            {/* Tab toggle */}
-            <div className="flex gap-1 bg-gray-100 rounded-xl p-1 w-fit">
-              <button
-                onClick={() => { setInviteTab('email'); setInviteResult(null) }}
-                className={`text-sm font-medium rounded-lg px-4 py-1.5 transition ${
-                  inviteTab === 'email'
-                    ? 'bg-white text-indigo-600 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
+        {/* Invite section */}
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+          <h3 className="text-sm font-semibold text-gray-900 mb-4">Invite people</h3>
+
+          {/* Generate link */}
+          {!inviteUrl ? (
+            <button
+              onClick={generateInviteLink}
+              disabled={generatingLink}
+              className="w-full border border-dashed border-indigo-300 rounded-xl py-3 text-sm font-medium text-indigo-600 hover:bg-indigo-50 disabled:opacity-50 transition"
+            >
+              {generatingLink ? 'Generating…' : '🔗 Generate invite link'}
+            </button>
+          ) : (
+            <div className="space-y-2 mb-4">
+              <div className="flex gap-2">
+                <input
+                  readOnly
+                  value={inviteUrl}
+                  className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-600 bg-gray-50 focus:outline-none truncate"
+                />
+                <button
+                  onClick={copyLink}
+                  className="shrink-0 px-3 py-2 rounded-xl border border-gray-200 text-xs font-medium text-gray-700 hover:bg-gray-50 transition"
+                >
+                  {copied ? '✓ Copied' : 'Copy'}
+                </button>
+              </div>
+              <a
+                href={`https://wa.me/?text=${encodeURIComponent(`Join my group "${groupName}" on Split Money: ${inviteUrl}`)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-center gap-2 w-full py-2 rounded-xl bg-[#25D366] text-white text-xs font-medium hover:opacity-90 transition"
               >
-                By email
-              </button>
-              <button
-                onClick={() => { setInviteTab('phone'); setInviteResult(null) }}
-                className={`text-sm font-medium rounded-lg px-4 py-1.5 transition ${
-                  inviteTab === 'phone'
-                    ? 'bg-white text-indigo-600 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                By phone
-              </button>
+                <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                Share on WhatsApp
+              </a>
             </div>
+          )}
 
-            {/* Email tab */}
-            {inviteTab === 'email' && (
-              <div className="flex gap-2">
-                <input
-                  type="email"
-                  placeholder="Email address…"
-                  value={inviteEmail}
-                  onChange={(e) => { setInviteEmail(e.target.value); setInviteResult(null) }}
-                  onKeyDown={(e) => e.key === 'Enter' && inviteMember()}
-                  className="flex-1 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-                />
-                <button
-                  onClick={inviteMember}
-                  disabled={inviting || !inviteEmail.trim()}
-                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-xl px-4 py-2.5 transition shrink-0"
-                >
-                  {inviting ? 'Inviting…' : 'Invite'}
-                </button>
-              </div>
+          {/* Search existing users */}
+          <div className="mt-4">
+            <input
+              type="text"
+              placeholder="Search by name or phone…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+            />
+            {searching && <p className="text-xs text-gray-400 mt-2">Searching…</p>}
+            {!searching && searchQuery.trim() && searchResults.length === 0 && (
+              <p className="text-xs text-gray-400 mt-2">No users found — share the invite link above</p>
             )}
-
-            {/* Phone tab */}
-            {inviteTab === 'phone' && (
-              <div className="flex gap-2">
-                <input
-                  type="tel"
-                  placeholder="+91 98765 43210"
-                  value={invitePhone}
-                  onChange={(e) => { setInvitePhone(e.target.value); setInviteResult(null) }}
-                  onKeyDown={(e) => e.key === 'Enter' && inviteByPhone()}
-                  className="flex-1 border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-                />
-                <button
-                  onClick={inviteByPhone}
-                  disabled={inviting || !invitePhone.trim()}
-                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold rounded-xl px-4 py-2.5 transition shrink-0"
-                >
-                  {inviting ? 'Inviting…' : 'Invite'}
-                </button>
-              </div>
-            )}
-
-            {/* Result message */}
-            {inviteResult && (
-              <div
-                className={`text-sm rounded-xl px-4 py-3 ${
-                  inviteResult.type === 'success'
-                    ? 'bg-emerald-50 text-emerald-700'
-                    : inviteResult.type === 'not_found'
-                    ? 'bg-amber-50 text-amber-700'
-                    : inviteResult.type === 'already_member'
-                    ? 'bg-gray-50 text-gray-600'
-                    : 'bg-red-50 text-red-600'
-                }`}
-              >
-                {inviteResult.type === 'not_found' && inviteTab === 'email' ? (
-                  <span>
-                    No account found.{' '}
+            {searchResults.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {searchResults.map((u) => (
+                  <div key={u.id} className="flex items-center justify-between px-3 py-2 rounded-xl hover:bg-gray-50">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">{u.display_name}</p>
+                      {u.phone && <p className="text-xs text-gray-400">{u.phone}</p>}
+                    </div>
                     <button
-                      onClick={() => navigator.clipboard.writeText(window.location.origin)}
-                      className="underline font-medium hover:no-underline"
+                      onClick={() => addUserToGroup(u.id)}
+                      disabled={addingUserId === u.id}
+                      className="text-xs font-medium text-indigo-600 hover:text-indigo-800 disabled:opacity-50 transition"
                     >
-                      Copy signup link
+                      {addingUserId === u.id ? 'Adding…' : 'Add'}
                     </button>
-                    {' '}and share it with them.
-                  </span>
-                ) : (
-                  inviteResult.message
-                )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
-
-          {/* Pending phone invites */}
-          {pendingInvites.length > 0 && (
-            <div className="mt-3 bg-white rounded-2xl border border-gray-100 px-5 py-4">
-              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
-                Pending invites ({pendingInvites.length})
-              </h3>
-              <ul className="space-y-2">
-                {pendingInvites.map((inv) => (
-                  <li key={inv.id} className="flex items-center justify-between gap-3">
-                    <span className="text-sm text-gray-700">{inv.phone}</span>
-                    <span className="text-xs font-medium text-amber-600 bg-amber-50 border border-amber-100 rounded-full px-2.5 py-0.5 shrink-0">
-                      Waiting for signup
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
+        </div>
 
         {/* Leave confirm */}
         {showLeaveConfirm && (
