@@ -80,6 +80,16 @@ interface SettlementRow {
   from_user: string
   to_user: string
   amount: number
+  note: string
+  created_at: string
+}
+
+interface ActivityRow {
+  id: string
+  user_id: string
+  action: string
+  meta: Record<string, unknown>
+  created_at: string
 }
 
 // Deterministic color + initials helpers
@@ -167,6 +177,7 @@ function GroupPage() {
   const [settlements, setSettlements] = useState<SettlementRow[]>([])
   const [settleModal, setSettleModal] = useState<{ toUserId: string; amount: number } | null>(null)
   const [settling, setSettling] = useState(false)
+  const [activity, setActivity] = useState<ActivityRow[]>([])
 
   useEffect(() => {
     loadAll()
@@ -241,11 +252,12 @@ function GroupPage() {
       setSplits([])
     }
 
-    const { data: settlementsData } = await supabase
-      .from('settlements')
-      .select('from_user, to_user, amount')
-      .eq('group_id', groupId)
-    setSettlements(settlementsData ?? [])
+    const [settlementsRes, activityRes] = await Promise.all([
+      supabase.from('settlements').select('from_user, to_user, amount, note, created_at').eq('group_id', groupId).order('created_at', { ascending: false }),
+      supabase.from('activity').select('id, user_id, action, meta, created_at').eq('group_id', groupId).order('created_at', { ascending: false }).limit(20),
+    ])
+    setSettlements(settlementsRes.data ?? [])
+    setActivity(activityRes.data ?? [])
 
     setLoading(false)
   }
@@ -292,6 +304,13 @@ function GroupPage() {
 
     const { error: splitErr } = await supabase.from('expense_splits').insert(splitRows)
     if (splitErr) setError(splitErr.message)
+
+    await supabase.from('activity').insert({
+      group_id: groupId,
+      user_id: currentUserId!,
+      action: 'expense_added',
+      meta: { expense_id: expense.id, amount: parsed, description: desc.trim(), paid_by: paidBy || currentUserId },
+    })
 
     setDesc('')
     setAmount('')
@@ -399,6 +418,33 @@ function GroupPage() {
     return profiles[userId]?.display_name || userId.slice(0, 8)
   }
 
+  function activityText(item: ActivityRow): string {
+    const actor = displayName(item.user_id)
+    if (item.action === 'expense_added') {
+      const m = item.meta as { description: string; amount: number; paid_by: string }
+      const payer = m.paid_by === currentUserId ? 'you' : displayName(m.paid_by as string)
+      return `${actor} added "${m.description}" — ₹${Number(m.amount).toFixed(2)} paid by ${payer}`
+    }
+    if (item.action === 'settled') {
+      const m = item.meta as { to_user: string; amount: number }
+      return `${actor} paid ${displayName(m.to_user as string)} ₹${Number(m.amount).toFixed(2)}`
+    }
+    if (item.action === 'member_joined') return `${actor} joined the group`
+    return `${actor} updated the group`
+  }
+
+  function relativeTime(ts: string): string {
+    const diff = Date.now() - new Date(ts).getTime()
+    const mins = Math.floor(diff / 60000)
+    if (mins < 1) return 'just now'
+    if (mins < 60) return `${mins}m ago`
+    const hrs = Math.floor(mins / 60)
+    if (hrs < 24) return `${hrs}h ago`
+    const days = Math.floor(hrs / 24)
+    if (days < 7) return `${days}d ago`
+    return new Date(ts).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
+  }
+
   async function markSettled() {
     if (!currentUserId || !settleModal) return
     setSettling(true)
@@ -408,6 +454,12 @@ function GroupPage() {
       to_user: settleModal.toUserId,
       amount: settleModal.amount,
       note: 'Settled',
+    })
+    await supabase.from('activity').insert({
+      group_id: groupId,
+      user_id: currentUserId!,
+      action: 'settled',
+      meta: { to_user: settleModal.toUserId, amount: settleModal.amount },
     })
     setSettling(false)
     setSettleModal(null)
@@ -672,6 +724,18 @@ function GroupPage() {
                       <span className={`text-sm font-bold shrink-0 ${iPaid ? 'text-emerald-600' : 'text-gray-700'}`}>
                         ₹{Number(ex.amount).toFixed(2)}
                       </span>
+                      {(() => {
+                        const mySplit = splits.find(s => s.expense_id === ex.id && s.user_id === currentUserId && !s.settled)
+                        if (!mySplit || ex.paid_by === currentUserId) return null
+                        return (
+                          <button onClick={async () => {
+                            await supabase.from('expense_splits').update({ settled: true }).eq('id', mySplit.id)
+                            loadAll()
+                          }} className="text-xs text-indigo-600 border border-indigo-200 bg-indigo-50 rounded-lg px-2 py-0.5 font-medium hover:bg-indigo-100 transition shrink-0">
+                            Paid my share
+                          </button>
+                        )
+                      })()}
                       {isOwner && (
                         <div className="relative shrink-0">
                           <button
@@ -785,6 +849,48 @@ function GroupPage() {
             </ul>
           )}
         </section>
+
+        {/* Activity feed */}
+        {activity.length > 0 && (
+          <section>
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Recent activity</h2>
+            <ul className="space-y-0 bg-white rounded-2xl border border-gray-100 overflow-hidden divide-y divide-gray-50">
+              {activity.map(item => (
+                <li key={item.id} className="flex items-center gap-3 px-5 py-3">
+                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0"
+                    style={{ backgroundColor: avatarColor(displayName(item.user_id)) }}>
+                    {initials(displayName(item.user_id))}
+                  </div>
+                  <p className="flex-1 text-sm text-gray-700 min-w-0 truncate">{activityText(item)}</p>
+                  <span className="text-xs text-gray-400 shrink-0">{relativeTime(item.created_at)}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {/* Settlements history */}
+        {settlements.length > 0 && (
+          <section>
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Settlements</h2>
+            <ul className="space-y-2">
+              {settlements.slice(0, 10).map((s, i) => (
+                <li key={i} className="bg-white rounded-2xl border border-gray-100 px-5 py-3 flex items-center justify-between">
+                  <div className="text-sm text-gray-700">
+                    <span className="font-medium">{displayName(s.from_user)}</span>
+                    <span className="text-gray-400 mx-1.5">paid</span>
+                    <span className="font-medium">{displayName(s.to_user)}</span>
+                    {s.note && <span className="text-gray-400 ml-1.5">· {s.note}</span>}
+                  </div>
+                  <div className="text-right shrink-0 ml-4">
+                    <p className="text-sm font-bold text-emerald-600">₹{Number(s.amount).toFixed(2)}</p>
+                    <p className="text-xs text-gray-400">{relativeTime(s.created_at)}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         {/* Members */}
         <section>
@@ -1084,7 +1190,7 @@ function GroupPage() {
         const theirUpiId = payee?.upi_id
         const isAndroid = /android/i.test(navigator.userAgent)
         const upiString = theirUpiId
-          ? `upi://pay?pa=${encodeURIComponent(theirUpiId)}&pn=${encodeURIComponent(payeeName)}&am=${settleModal.amount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(`Split Money - ${groupName}`)}`
+          ? `upi://pay?pa=${theirUpiId}&pn=${encodeURIComponent(payeeName)}&am=${settleModal.amount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(`Split Money - ${groupName}`)}`
           : null
 
         return (
