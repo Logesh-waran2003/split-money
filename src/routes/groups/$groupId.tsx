@@ -278,6 +278,29 @@ function GroupPage() {
     const parsed = parseFloat(amount)
     if (isNaN(parsed) || parsed <= 0) return
 
+    // Hard validation for non-equal split modes
+    if (splitMode === 'exact') {
+      const total = members.reduce((s, m) => s + parseFloat(memberInputs[m.user_id] || '0'), 0)
+      if (Math.abs(total - parsed) > 0.01) {
+        setError(`Exact amounts must sum to ₹${parsed.toFixed(2)}. Current total: ₹${total.toFixed(2)}`)
+        return
+      }
+    }
+    if (splitMode === 'percentage') {
+      const total = members.reduce((s, m) => s + parseFloat(memberInputs[m.user_id] || '0'), 0)
+      if (Math.abs(total - 100) > 0.1) {
+        setError(`Percentages must sum to 100%. Current total: ${total.toFixed(1)}%`)
+        return
+      }
+    }
+    if (splitMode === 'shares') {
+      const total = members.reduce((s, m) => s + parseFloat(memberInputs[m.user_id] || '1'), 0)
+      if (total <= 0) {
+        setError('Total shares must be greater than 0')
+        return
+      }
+    }
+
     setAdding(true)
     setError(null)
 
